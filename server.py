@@ -1,11 +1,12 @@
 import os
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 import requests
 import pandas as pd
 import numpy as np
 import pickle
 from sklearn.preprocessing import StandardScaler
 from datetime import datetime
+import io
 
 app = Flask(__name__)
 
@@ -98,9 +99,10 @@ except Exception as e:
 def index():
     return jsonify({
         "project": "FluSight 2026",
-        "phase": "A",
+        "phase": "B",
         "status": "active",
-        "models_loaded": MODELS is not None
+        "models_loaded": MODELS is not None,
+        "merged_records": len(MERGED_DATA) if MERGED_DATA is not None else 0
     })
 
 @app.route("/health")
@@ -141,6 +143,25 @@ def merged():
         return jsonify({"status": "ok", "records": len(MERGED_DATA), "columns": list(MERGED_DATA.columns)}), 200
     else:
         return jsonify({"status": "error"}), 500
+
+@app.route("/export_csv")
+def export_csv():
+    """NSSP + Humidity 병합 데이터를 CSV로 내보내기"""
+    if MERGED_DATA is None:
+        return jsonify({"error": "Merged data not available"}), 500
+    
+    try:
+        csv_buffer = io.StringIO()
+        MERGED_DATA.to_csv(csv_buffer, index=False)
+        csv_content = csv_buffer.getvalue()
+        
+        return Response(
+            csv_content,
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment; filename=flusight_merged_data.csv"}
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/predict", methods=['POST'])
 def predict():
