@@ -99,7 +99,7 @@ except Exception as e:
 def index():
     return jsonify({
         "project": "FluSight 2026",
-        "phase": "B",
+        "phase": "A",
         "status": "active",
         "models_loaded": MODELS is not None,
         "merged_records": len(MERGED_DATA) if MERGED_DATA is not None else 0
@@ -108,6 +108,44 @@ def index():
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"}), 200
+
+@app.route("/test")
+def test():
+    """자동 테스트 (Render 배포 확인용)"""
+    if MODELS is None or MERGED_DATA is None:
+        return jsonify({"status": "error", "message": "Models or data not loaded"}), 500
+    
+    try:
+        # 마지막 주 데이터로 테스트
+        sample = MERGED_DATA.iloc[-1]
+        
+        features = [
+            float(sample['lag']),
+            float(sample['num_ili']),
+            float(sample['num_patients']),
+            float(sample['num_providers']),
+            float(sample['temp_c']),
+            float(sample['ah_g_m3'])
+        ]
+        
+        X = np.array([features])
+        X_scaled = SCALER.transform(X)
+        
+        predictions = {}
+        for q_name, model in MODELS.items():
+            pred = float(model.predict(X_scaled)[0])
+            predictions[q_name] = round(pred, 4)
+        
+        return jsonify({
+            "status": "ok",
+            "test": "success",
+            "epiweek": int(sample['epiweek']),
+            "predictions": predictions,
+            "timestamp": datetime.utcnow().isoformat()
+        }), 200
+    
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route("/collect")
 def collect():
