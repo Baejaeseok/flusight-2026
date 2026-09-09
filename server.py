@@ -1,23 +1,29 @@
 import os
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import requests
 import pandas as pd
-import json
+import numpy as np
+import pickle
+from sklearn.preprocessing import StandardScaler
 from datetime import datetime
 
 app = Flask(__name__)
 
-# ============ 초기화: 데이터 수집 ============
+# ============ 전역 변수 ============
 NSSP_DATA = None
 HUMIDITY_DATA = None
 CENSUS_DATA = None
 MERGED_DATA = None
+MODELS = None
+SCALER = None
+FEATURES = None
+QUANTILES = None
 
 def init_data():
-    """앱 시작 시 데이터 수집"""
-    global NSSP_DATA, HUMIDITY_DATA, CENSUS_DATA, MERGED_DATA
+    """앱 시작 시 데이터 + 모델 수집"""
+    global NSSP_DATA, HUMIDITY_DATA, CENSUS_DATA, MERGED_DATA, MODELS, SCALER, FEATURES, QUANTILES
     
-    print("[init] Loading data...", flush=True)
+    print("[init] Loading data and models...", flush=True)
     
     # 1. NSSP ILI
     try:
@@ -64,12 +70,28 @@ def init_data():
     if NSSP_DATA is not None and HUMIDITY_DATA is not None:
         MERGED_DATA = pd.merge(NSSP_DATA, HUMIDITY_DATA, on='epiweek', how='inner')
         print(f"[init] Merged: {len(MERGED_DATA)} weeks", flush=True)
+    
+    # 5. 모델 로드
+    try:
+        url = "https://raw.githubusercontent.com/Baejaeseok/flusight-2026/main/models/flusight_phase_a_models.pkl"
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        
+        model_data = pickle.loads(resp.content)
+        MODELS = model_data['models']
+        SCALER = model_data['scaler']
+        FEATURES = model_data['features']
+        QUANTILES = model_data['quantiles']
+        
+        print(f"[init] Models: {len(MODELS)} quantiles loaded", flush=True)
+    except Exception as e:
+        print(f"[init] Model loading error: {e}", flush=True)
 
-# 앱 시작 시 데이터 로드
+# 앱 시작
 try:
     init_data()
 except Exception as e:
-    print(f"[init] Error during initialization: {e}", flush=True)
+    print(f"[init] Error: {e}", flush=True)
 
 # ============ ROUTES ============
 @app.route("/")
@@ -77,7 +99,8 @@ def index():
     return jsonify({
         "project": "FluSight 2026",
         "phase": "A",
-        "status": "active"
+        "status": "active",
+        "models_loaded": MODELS is not None
     })
 
 @app.route("/health")
@@ -118,6 +141,44 @@ def merged():
         return jsonify({"status": "ok", "records": len(MERGED_DATA), "columns": list(MERGED_DATA.columns)}), 200
     else:
         return jsonify({"status": "error"}), 500
+
+@app.route("/predict", methods=['POST'])
+def predict():
+    """LightGBM 예측"""
+    if MODELS is None or SCALER is None:
+        return jsonify({"error": "Models not loaded"}), 500
+    
+    try:
+        data = request.get_json()
+        
+        # 입력: lag, num_ili, num_patients, num_providers, temp_c, ah_g_m3
+        features = [
+            float(data['lag']),
+            float(data['num_ili']),
+            float(data['num_patients']),
+            float(data['num_providers']),
+            float(data['temp_c']),
+            float(data['ah_g_m3'])
+        ]
+        
+        X = np.array([features])
+        X_scaled = SCALER.transform(X)
+        
+        # 7개 quantile 예측
+        predictions = {}
+        for q_name, model in MODELS.items():
+            pred = float(model.predict(X_scaled)[0])
+            predictions[q_name] = round(pred, 4)
+        
+        return jsonify({
+            "status": "ok",
+            "input": features,
+            "predictions": predictions,
+            "timestamp": datetime.utcnow().isoformat()
+        }), 200
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "10000"))
